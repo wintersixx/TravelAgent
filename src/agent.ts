@@ -12,6 +12,15 @@
  * Frameworks (LangGraph, CrewAI, the OpenAI Agents SDK) are wrappers around
  * this. Useful ones, but this is what's underneath. Read it once and the whole
  * category stops being mysterious.
+ *
+ * ── What changed when we added a UI ──────────────────────────────────────
+ * The loop is identical to the CLI version. The only difference: instead of
+ * calling console.log directly, it calls an `emit` function for every
+ * interesting step. The CLI passes an emit that prints; the web server passes
+ * an emit that pushes the event down an HTTP stream to the browser. Same loop,
+ * two audiences. That separation — logic emits events, callers decide what to
+ * do with them — is how you keep one agent usable from a terminal, a web app,
+ * and a test harness without forking it three ways.
  */
 
 import OpenAI from "openai";
@@ -25,11 +34,28 @@ import { toolSchemas, runTool } from "./tools.js";
 // will happily spend your money forever. Every production agent has one.
 const MAX_TURNS = 10;
 
+/**
+ * Every meaningful thing the loop does becomes one of these events. This is the
+ * agent's narration — the UI is built entirely out of this stream.
+ */
+export type AgentEvent =
+  | { type: "turn_start"; turn: number; conversationLength: number }
+  | { type: "thinking"; text: string }
+  | { type: "tool_call"; name: string; args: string }
+  | { type: "tool_result"; name: string; resultPreview: string }
+  | { type: "final"; text: string }
+  | { type: "error"; message: string }
+  | { type: "limit_reached"; maxTurns: number };
+
+export type Emit = (event: AgentEvent) => void;
+
 export interface AgentOptions {
   client: OpenAI;
   model: string;
   systemPrompt: string;
   userPrompt: string;
+  /** Called for every step. Defaults to a no-op if you don't care. */
+  emit?: Emit;
 }
 
 export async function runAgent({
@@ -37,6 +63,7 @@ export async function runAgent({
   model,
   systemPrompt,
   userPrompt,
+  emit = () => {},
 }: AgentOptions): Promise<string> {
   /**
    * THE CONVERSATION.
@@ -54,9 +81,7 @@ export async function runAgent({
   ];
 
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
-    console.log(`\n${"─".repeat(70)}`);
-    console.log(`TURN ${turn}  (conversation is ${messages.length} messages long)`);
-    console.log("─".repeat(70));
+    emit({ type: "turn_start", turn, conversationLength: messages.length });
 
     // ── STEP 1: Ask the model what to do next ──────────────────────────────
     // We hand over the full conversation and the list of tools it may use.
@@ -69,8 +94,7 @@ export async function runAgent({
       tools: toolSchemas as ChatCompletionTool[],
     });
 
-    const choice = response.choices[0];
-    const message = choice.message;
+    const message = response.choices[0].message;
 
     // ── STEP 2: Record what the model said ────────────────────────────────
     // Its reply goes into the conversation before we do anything else. If we
@@ -79,7 +103,7 @@ export async function runAgent({
     messages.push(message);
 
     if (message.content) {
-      console.log(`\n💭 Model says:\n${message.content}\n`);
+      emit({ type: "thinking", text: message.content });
     }
 
     // ── STEP 3: Did it ask for tools? ─────────────────────────────────────
@@ -90,15 +114,14 @@ export async function runAgent({
       // No tool calls means the model is finished working and is just talking
       // to us. That's our exit condition. The agent decided it was done — we
       // didn't decide for it.
-      console.log("✅ No tool calls — the model is done.");
-      return message.content ?? "(no content)";
+      const final = message.content ?? "(no content)";
+      emit({ type: "final", text: final });
+      return final;
     }
 
     // ── STEP 4: Run the tools it asked for ────────────────────────────────
     // The model can ask for several at once (e.g. hotels in Tokyo AND Kyoto).
     // These are independent, so we run them in parallel.
-    console.log(`🔧 Model requested ${toolCalls.length} tool call(s):`);
-
     const results = await Promise.all(
       toolCalls.map(async (call) => {
         // Type narrowing: the SDK's union covers custom tools too, but we only
@@ -108,12 +131,12 @@ export async function runAgent({
         }
 
         const { name, arguments: rawArgs } = call.function;
-        console.log(`   → ${name}(${rawArgs})`);
+        emit({ type: "tool_call", name, args: rawArgs });
 
         const output = runTool(name, rawArgs);
 
         const preview = output.length > 200 ? output.slice(0, 200) + "…" : output;
-        console.log(`     ↩ ${preview}`);
+        emit({ type: "tool_result", name, resultPreview: preview });
 
         return { id: call.id, output };
       }),
@@ -136,5 +159,6 @@ export async function runAgent({
   }
 
   // We fell out of the loop without the model ever finishing.
+  emit({ type: "limit_reached", maxTurns: MAX_TURNS });
   return `⚠️ Hit the ${MAX_TURNS}-turn limit without finishing.`;
 }

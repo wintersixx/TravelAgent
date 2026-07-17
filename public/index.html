@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trip Planner</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-2: #1e222b;
+        --border: #2a2f3a;
+        --text: #e7e9ee;
+        --muted: #9aa3b2;
+        --accent: #7c9cff;
+        --accent-dim: #2d3550;
+        --good: #4ade80;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--border);
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); }
+      main {
+        flex: 1;
+        overflow-y: auto;
+        padding: 24px 20px 140px;
+        max-width: 820px;
+        width: 100%;
+        margin: 0 auto;
+      }
+      .msg { margin-bottom: 20px; }
+      .msg.user .bubble {
+        background: var(--accent-dim);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px 16px;
+        white-space: pre-wrap;
+      }
+      .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+
+      /* The activity feed — the "it's searching sources" bit. */
+      .activity {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      .activity-head {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .spinner {
+        width: 14px; height: 14px;
+        border: 2px solid var(--accent-dim);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin .8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .steps { padding: 6px 0; }
+      .step {
+        padding: 7px 16px;
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        font-size: 13.5px;
+        animation: fade .25s ease;
+      }
+      @keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }
+      .step .icon { flex: none; width: 16px; text-align: center; }
+      .step .body { color: var(--text); }
+      .step .body .sub { color: var(--muted); font-size: 12px; margin-top: 2px; font-family: ui-monospace, monospace; }
+      .step.thinking .body { color: var(--muted); font-style: italic; }
+
+      /* The final itinerary, rendered from markdown. */
+      .answer {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 4px 20px 16px;
+      }
+      .answer h1, .answer h2, .answer h3 { line-height: 1.3; }
+      .answer h1 { font-size: 20px; } .answer h2 { font-size: 17px; } .answer h3 { font-size: 15px; }
+      .answer code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+      .answer hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+      .answer ul { padding-left: 20px; }
+      .answer strong { color: #fff; }
+
+      /* Composer pinned to the bottom, chat-style. */
+      footer {
+        position: fixed; bottom: 0; left: 0; right: 0;
+        background: linear-gradient(transparent, var(--bg) 30%);
+        padding: 16px 20px 22px;
+      }
+      .composer {
+        max-width: 820px; margin: 0 auto;
+        display: flex; gap: 10px;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 8px 8px 8px 16px;
+      }
+      .composer textarea {
+        flex: 1; background: none; border: none; color: var(--text);
+        resize: none; font: inherit; outline: none; max-height: 120px;
+      }
+      .composer button {
+        flex: none; align-self: flex-end;
+        background: var(--accent); color: #0b0d12; border: none;
+        border-radius: 10px; padding: 9px 16px; font-weight: 600; cursor: pointer;
+      }
+      .composer button:disabled { opacity: .4; cursor: default; }
+      .hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 8px; }
+      .empty { color: var(--muted); text-align: center; margin-top: 60px; }
+      .empty .examples { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+      .empty .ex {
+        background: var(--panel); border: 1px solid var(--border);
+        border-radius: 10px; padding: 8px 14px; cursor: pointer; max-width: 560px;
+      }
+      .empty .ex:hover { border-color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <header><span class="dot"></span> Trip Planner</header>
+    <main id="feed">
+      <div class="empty" id="empty">
+        <div>Describe your trip and the agent will research it live.</div>
+        <div class="examples">
+          <div class="ex">Plan me an Ibiza trip in September. I like underground house/techno, good restaurants, beaches, and I don't want to spend more than €200/day.</div>
+          <div class="ex">7 days in Japan in October under £2500 — food, nightlife, photography. Tokyo and maybe Kyoto.</div>
+        </div>
+      </div>
+    </main>
+    <footer>
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Plan me a trip to…"></textarea>
+        <button id="send">Plan</button>
+      </div>
+      <div class="hint">The agent searches flights, hotels and activities, then writes an itinerary.</div>
+    </footer>
+
+    <script>
+      // Where the backend lives. Same origin here; in a split deploy you'd point
+      // this at your Google Cloud URL, e.g. "https://trip-api.run.app".
+      const API_BASE = "";
+
+      const feed = document.getElementById("feed");
+      const input = document.getElementById("input");
+      const send = document.getElementById("send");
+      const empty = document.getElementById("empty");
+
+      // Auto-grow the textarea.
+      input.addEventListener("input", () => {
+        input.style.height = "auto";
+        input.style.height = input.scrollHeight + "px";
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); run(); }
+      });
+      send.addEventListener("click", run);
+      document.querySelectorAll(".ex").forEach((el) =>
+        el.addEventListener("click", () => { input.value = el.textContent.trim(); run(); }),
+      );
+
+      function el(tag, cls, html) {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (html !== undefined) n.innerHTML = html;
+        return n;
+      }
+      const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+      function run() {
+        const prompt = input.value.trim();
+        if (!prompt || send.disabled) return;
+        if (empty) empty.remove();
+
+        // Echo the user's message.
+        const userMsg = el("div", "msg user");
+        userMsg.append(el("div", "label", "You"), el("div", "bubble", esc(prompt)));
+        feed.append(userMsg);
+
+        input.value = "";
+        input.style.height = "auto";
+        send.disabled = true;
+
+        // The activity card that fills up as events stream in.
+        const card = el("div", "msg");
+        const activity = el("div", "activity");
+        const head = el("div", "activity-head");
+        head.append(el("span", "spinner"), el("span", null, "Researching your trip…"));
+        const steps = el("div", "steps");
+        activity.append(head, steps);
+        card.append(activity);
+        feed.append(card);
+        scroll();
+
+        // ── The SSE connection ────────────────────────────────────────────
+        // EventSource is the browser's built-in SSE client. Each `data:` line
+        // the server wrote becomes an onmessage event here. This is the entire
+        // client-side transport — no library.
+        const url = API_BASE + "/api/plan?prompt=" + encodeURIComponent(prompt);
+        const es = new EventSource(url);
+
+        const addStep = (icon, body, sub, cls = "") => {
+          const s = el("div", "step " + cls);
+          s.append(el("span", "icon", icon));
+          const b = el("div", "body");
+          b.append(document.createTextNode(body));
+          if (sub) b.append(el("div", "sub", esc(sub)));
+          s.append(b);
+          steps.append(s);
+          scroll();
+        };
+
+        es.onmessage = (e) => {
+          const ev = JSON.parse(e.data);
+          switch (ev.type) {
+            case "thinking":
+              addStep("💭", ev.text, null, "thinking");
+              break;
+            case "tool_call": {
+              const label = { search_flights: "Searching flights", search_hotels: "Searching hotels", search_activities: "Finding things to do" }[ev.name] || ev.name;
+              let detail = ev.args;
+              try { detail = Object.values(JSON.parse(ev.args)).join(" · "); } catch {}
+              addStep("🔎", label, detail);
+              break;
+            }
+            case "final":
+              head.innerHTML = "";
+              head.append(el("span", null, "✓ Done"));
+              head.style.color = "var(--good)";
+              const ans = el("div", "answer", renderMarkdown(ev.text));
+              card.append(ans);
+              scroll();
+              break;
+            case "error":
+              addStep("❌", "Error: " + ev.message, null);
+              head.querySelector(".spinner")?.remove();
+              break;
+          }
+        };
+
+        // Fired by our "event: done" sentinel, and on any connection error.
+        es.addEventListener("done", () => { es.close(); finish(); });
+        es.onerror = () => { es.close(); finish(); };
+
+        function finish() {
+          send.disabled = false;
+          head.querySelector(".spinner")?.remove();
+        }
+      }
+
+      function scroll() { window.scrollTo(0, document.body.scrollHeight); feed.parentElement; document.querySelector("main").scrollTop = document.querySelector("main").scrollHeight; }
+
+      // Tiny, deliberately incomplete markdown renderer — enough for the
+      // itinerary format (headings, bold, lists, hr, inline code). Not a
+      // dependency; just enough to look right.
+      function renderMarkdown(md) {
+        const lines = md.split("\n");
+        let html = "", inList = false;
+        const inline = (t) =>
+          esc(t)
+            .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+            .replace(/`(.+?)`/g, "<code>$1</code>");
+        for (let line of lines) {
+          if (/^\s*[-*]\s+/.test(line)) {
+            if (!inList) { html += "<ul>"; inList = true; }
+            html += "<li>" + inline(line.replace(/^\s*[-*]\s+/, "")) + "</li>";
+            continue;
+          }
+          if (inList) { html += "</ul>"; inList = false; }
+          if (/^###\s+/.test(line)) html += "<h3>" + inline(line.slice(4)) + "</h3>";
+          else if (/^##\s+/.test(line)) html += "<h2>" + inline(line.slice(3)) + "</h2>";
+          else if (/^#\s+/.test(line)) html += "<h1>" + inline(line.slice(2)) + "</h1>";
+          else if (/^---+\s*$/.test(line)) html += "<hr>";
+          else if (line.trim() === "") html += "";
+          else html += "<p>" + inline(line) + "</p>";
+        }
+        if (inList) html += "</ul>";
+        return html;
+      }
+    </script>
+  </body>
+</html>
