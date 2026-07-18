@@ -51,6 +51,15 @@ const printEvent = (e: AgentEvent) => {
     case "tool_result":
       console.log(`   ↩ ${e.resultPreview}`);
       break;
+    case "subagent_start":
+      console.log(`\n🤖 SUB-AGENT: ${e.name} — ${e.detail}`);
+      break;
+    case "subagent_step":
+      console.log(`   ↳ ${e.detail}`);
+      break;
+    case "subagent_end":
+      console.log(`🤖 SUB-AGENT done: ${e.conclusion}`);
+      break;
     case "verifying":
       console.log(`\n🔒 Verifying itinerary against tool data…`);
       break;

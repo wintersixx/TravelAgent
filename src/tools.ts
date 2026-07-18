@@ -15,21 +15,43 @@
  * any bug you hit is in the loop, not in someone's flaky API.
  */
 
+import OpenAI from "openai";
 import { flightSchema, searchFlightsLive } from "./flights-live.js";
 import { hotelSchema, searchHotelsLive } from "./hotels-live.js";
+import {
+  compareAirportsSchema,
+  compareLondonAirports,
+} from "./subagent-airports.js";
+import type { Ledger } from "./verifier.js";
+import type { Emit } from "./agent.js";
+
+/**
+ * Most tools are self-contained: give them args, they return data. But some
+ * tools need to reach back into the running agent — the sub-agent tool makes its
+ * own LLM calls, records into the shared ledger, and emits UI events. Rather
+ * than make every tool take those, we pass an optional ToolContext that special
+ * tools use and ordinary tools ignore.
+ */
+export interface ToolContext {
+  client: OpenAI;
+  model: string;
+  ledger: Ledger;
+  emit: Emit;
+}
 
 // ---------------------------------------------------------------------------
 // 1. SCHEMAS — what the model sees
 // ---------------------------------------------------------------------------
 //
 // search_flights and search_hotels are now REAL (SerpApi / Google Flights &
-// Google Hotels) — see flights-live.ts and hotels-live.ts. search_activities is
-// still fake. Nothing else in the system changed to swap a tool from fake to
-// real: that's the tool abstraction earning its keep.
+// Google Hotels). compare_london_airports is a SUB-AGENT (subagent-airports.ts).
+// search_activities is still fake. Nothing else in the system changed to swap a
+// tool from fake to real: that's the tool abstraction earning its keep.
 
 export const toolSchemas = [
   flightSchema,
   hotelSchema,
+  compareAirportsSchema,
   {
     type: "function" as const,
     function: {
@@ -133,13 +155,32 @@ export const toolHandlers: Record<string, Handler> = {
  */
 // Now async: real tools (search_flights) make network calls. We await the
 // handler whether it's sync or async — awaiting a non-promise is harmless.
-export async function runTool(name: string, rawArgs: string): Promise<string> {
+//
+// `ctx` is optional so the tool layer stays usable without a full agent (e.g.
+// the tool probe). The sub-agent tool REQUIRES it; if it's missing we return a
+// clean error rather than crashing.
+export async function runTool(
+  name: string,
+  rawArgs: string,
+  ctx?: ToolContext,
+): Promise<string> {
   try {
+    const args = JSON.parse(rawArgs);
+
+    // The sub-agent tool is dispatched specially because it needs the context
+    // (its own LLM client, the shared ledger, the event emitter) that ordinary
+    // handlers never touch.
+    if (name === "compare_london_airports") {
+      if (!ctx) {
+        return JSON.stringify({ error: "compare_london_airports requires an agent context." });
+      }
+      return JSON.stringify(await compareLondonAirports(args, ctx));
+    }
+
     const handler = toolHandlers[name];
     if (!handler) {
       return JSON.stringify({ error: `No such tool: ${name}` });
     }
-    const args = JSON.parse(rawArgs);
     return JSON.stringify(await handler(args));
   } catch (err) {
     return JSON.stringify({

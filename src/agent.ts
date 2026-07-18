@@ -49,6 +49,9 @@ export type AgentEvent =
   | { type: "thinking"; text: string }
   | { type: "tool_call"; name: string; args: string }
   | { type: "tool_result"; name: string; resultPreview: string }
+  | { type: "subagent_start"; name: string; detail: string }
+  | { type: "subagent_step"; detail: string }
+  | { type: "subagent_end"; name: string; conclusion: string }
   | { type: "verifying" }
   | { type: "verification"; verifiedCount: number; totalClaims: number; flagCount: number }
   | { type: "final"; text: string }
@@ -151,7 +154,9 @@ export async function runAgent({
         const { name, arguments: rawArgs } = call.function;
         emit({ type: "tool_call", name, args: rawArgs });
 
-        const output = await runTool(name, rawArgs);
+        // Pass the agent context so context-needing tools (the sub-agent) can
+        // make their own LLM calls, share this ledger, and emit UI events.
+        const output = await runTool(name, rawArgs, { client, model, ledger, emit });
 
         // Record the real result into the ledger. This is ground truth — the
         // only facts the verifier will accept in the final itinerary.
