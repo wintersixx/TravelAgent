@@ -246,6 +246,16 @@
               addStep("🔎", label, detail);
               break;
             }
+            case "verifying":
+              addStep("🔒", "Checking every venue and price against the data the tools actually returned…", null, "thinking");
+              break;
+            case "verification": {
+              const msg = ev.flagCount > 0
+                ? `Verified ${ev.verifiedCount}/${ev.totalClaims} claims — ${ev.flagCount} item(s) flagged as unverified`
+                : (ev.totalClaims > 0 ? `Verified ${ev.verifiedCount}/${ev.totalClaims} claims — all check out` : "No specific claims to verify");
+              addStep(ev.flagCount > 0 ? "⚠️" : "✅", msg, null);
+              break;
+            }
             case "final":
               head.innerHTML = "";
               head.append(el("span", null, "✓ Done"));

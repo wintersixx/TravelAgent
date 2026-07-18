@@ -29,6 +29,12 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
 import { toolSchemas, runTool } from "./tools.js";
+import {
+  Ledger,
+  verify,
+  renderVerified,
+  type StructuredItinerary,
+} from "./verifier.js";
 
 // A guard rail. Without it, a confused model that keeps calling tools forever
 // will happily spend your money forever. Every production agent has one.
@@ -43,6 +49,8 @@ export type AgentEvent =
   | { type: "thinking"; text: string }
   | { type: "tool_call"; name: string; args: string }
   | { type: "tool_result"; name: string; resultPreview: string }
+  | { type: "verifying" }
+  | { type: "verification"; verifiedCount: number; totalClaims: number; flagCount: number }
   | { type: "final"; text: string }
   | { type: "error"; message: string }
   | { type: "limit_reached"; maxTurns: number };
@@ -80,6 +88,11 @@ export async function runAgent({
     { role: "user", content: userPrompt },
   ];
 
+  // The ledger of ground truth. Every real tool result gets recorded here as it
+  // happens, and the verifier checks the final itinerary against it. This is the
+  // set of facts the model is allowed to build the answer from.
+  const ledger = new Ledger();
+
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
     emit({ type: "turn_start", turn, conversationLength: messages.length });
 
@@ -111,12 +124,17 @@ export async function runAgent({
     const toolCalls = message.tool_calls;
 
     if (!toolCalls || toolCalls.length === 0) {
-      // No tool calls means the model is finished working and is just talking
-      // to us. That's our exit condition. The agent decided it was done — we
-      // didn't decide for it.
-      const final = message.content ?? "(no content)";
-      emit({ type: "final", text: final });
-      return final;
+      // No tool calls means the model is done researching. But we DON'T just
+      // return its prose anymore — that's exactly what let it slip Trinity
+      // College and the Guinness Storehouse past us in the Dublin run.
+      //
+      // Instead we take one more step: ask it to render the itinerary as
+      // STRUCTURED JSON, where every venue and price must be a tagged field.
+      // Then we verify that structure against the ledger before anyone sees it.
+      emit({ type: "verifying" });
+      const finalText = await finaliseAndVerify(client, model, messages, ledger, emit);
+      emit({ type: "final", text: finalText });
+      return finalText;
     }
 
     // ── STEP 4: Run the tools it asked for ────────────────────────────────
@@ -134,6 +152,15 @@ export async function runAgent({
         emit({ type: "tool_call", name, args: rawArgs });
 
         const output = runTool(name, rawArgs);
+
+        // Record the real result into the ledger. This is ground truth — the
+        // only facts the verifier will accept in the final itinerary.
+        try {
+          ledger.record(name, JSON.parse(rawArgs), JSON.parse(output));
+        } catch {
+          // If args/output aren't parseable JSON we simply don't ledger them;
+          // an unparseable result can't be a source of verified facts anyway.
+        }
 
         const preview = output.length > 200 ? output.slice(0, 200) + "…" : output;
         emit({ type: "tool_result", name, resultPreview: preview });
@@ -161,4 +188,79 @@ export async function runAgent({
   // We fell out of the loop without the model ever finishing.
   emit({ type: "limit_reached", maxTurns: MAX_TURNS });
   return `⚠️ Hit the ${MAX_TURNS}-turn limit without finishing.`;
+}
+
+/**
+ * THE FINALISE + VERIFY STEP.
+ *
+ * Called once, when the model has finished researching. It does three things:
+ *
+ *   1. Asks the model to render its plan as STRUCTURED JSON (not prose), using
+ *      response_format so the API guarantees valid JSON matching our shape.
+ *      Every venue and price becomes a tagged field.
+ *   2. Runs the verifier: does each venue/price actually appear in the ledger
+ *      of real tool results?
+ *   3. Renders the result as Markdown with any unverified items visibly flagged.
+ *
+ * This is where "don't hallucinate" stops being a request and becomes enforced.
+ */
+async function finaliseAndVerify(
+  client: OpenAI,
+  model: string,
+  messages: ChatCompletionMessageParam[],
+  ledger: Ledger,
+  emit: Emit,
+): Promise<string> {
+  // We ask for the structured itinerary. Note we reuse the same conversation —
+  // the model already did all its research; now it just reformats what it found.
+  const finalResponse = await client.chat.completions.create({
+    model,
+    messages: [
+      ...messages,
+      {
+        role: "user",
+        content:
+          "Now output your final itinerary as JSON matching this exact shape:\n" +
+          `{
+  "summary": string,
+  "days": [{ "day": string, "items": [{ "activity": string, "venue"?: string, "priceGBP"?: number }] }],
+  "tradeoffs": string
+}\n` +
+          "CRITICAL RULE: the 'venue' and 'priceGBP' fields may ONLY contain " +
+          "specific names and numbers that were returned by your tools. If a " +
+          "tool did not return a venue or price, leave the field out and put a " +
+          "general suggestion in 'activity' instead (e.g. 'find a traditional " +
+          "pub in the centre'). Do not fill these fields from your own " +
+          "knowledge — they will be automatically checked against the tool data.",
+      },
+    ],
+    // This forces the API to return valid JSON. It does NOT force our shape or
+    // enforce our rule — the model can still put a made-up venue in the field.
+    // That's exactly why we still verify: structured output guarantees the
+    // FORMAT, the verifier guarantees the FACTS.
+    response_format: { type: "json_object" },
+  });
+
+  const raw = finalResponse.choices[0].message.content ?? "{}";
+
+  let itinerary: StructuredItinerary;
+  try {
+    itinerary = JSON.parse(raw) as StructuredItinerary;
+    // Minimal shape guard — a malformed structure shouldn't crash the run.
+    if (!Array.isArray(itinerary.days)) itinerary.days = [];
+    if (typeof itinerary.summary !== "string") itinerary.summary = "";
+    if (typeof itinerary.tradeoffs !== "string") itinerary.tradeoffs = "";
+  } catch {
+    return "⚠️ The model did not return a valid itinerary structure.";
+  }
+
+  const result = verify(itinerary, ledger);
+  emit({
+    type: "verification",
+    verifiedCount: result.verifiedCount,
+    totalClaims: result.totalClaims,
+    flagCount: result.flags.length,
+  });
+
+  return renderVerified(itinerary, result);
 }

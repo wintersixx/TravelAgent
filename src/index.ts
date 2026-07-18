@@ -51,6 +51,15 @@ const printEvent = (e: AgentEvent) => {
     case "tool_result":
       console.log(`   ↩ ${e.resultPreview}`);
       break;
+    case "verifying":
+      console.log(`\n🔒 Verifying itinerary against tool data…`);
+      break;
+    case "verification":
+      console.log(
+        `   ${e.flagCount > 0 ? "⚠️" : "✅"} ${e.verifiedCount}/${e.totalClaims} claims verified` +
+          (e.flagCount > 0 ? `, ${e.flagCount} flagged` : ""),
+      );
+      break;
     case "final":
       console.log(`\n${"═".repeat(70)}`);
       console.log("🏁 FINAL ANSWER");
