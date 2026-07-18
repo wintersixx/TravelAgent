@@ -13,8 +13,8 @@ const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
   console.error(
     "❌ No OPENAI_API_KEY found.\n" +
-      "   Copy .env.example to .env and paste your key in:\n" +
-      "     cp .env.example .env",
+    "   Copy .env.example to .env and paste your key in:\n" +
+    "     cp .env.example .env",
   );
   process.exit(1);
 }
@@ -57,7 +57,7 @@ const printEvent = (e: AgentEvent) => {
     case "verification":
       console.log(
         `   ${e.flagCount > 0 ? "⚠️" : "✅"} ${e.verifiedCount}/${e.totalClaims} claims verified` +
-          (e.flagCount > 0 ? `, ${e.flagCount} flagged` : ""),
+        (e.flagCount > 0 ? `, ${e.flagCount} flagged` : ""),
       );
       break;
     case "final":
@@ -81,7 +81,7 @@ console.log(userPrompt);
 
 await runAgent({
   client,
-  model: "gpt-4.1",
+  model: "gpt-5.4-mini-2026-03-17",
   systemPrompt: buildSystemPrompt(),
   userPrompt,
   emit: printEvent,

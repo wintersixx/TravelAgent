@@ -151,7 +151,7 @@ export async function runAgent({
         const { name, arguments: rawArgs } = call.function;
         emit({ type: "tool_call", name, args: rawArgs });
 
-        const output = runTool(name, rawArgs);
+        const output = await runTool(name, rawArgs);
 
         // Record the real result into the ledger. This is ground truth — the
         // only facts the verifier will accept in the final itinerary.
@@ -223,15 +223,27 @@ async function finaliseAndVerify(
           "Now output your final itinerary as JSON matching this exact shape:\n" +
           `{
   "summary": string,
-  "days": [{ "day": string, "items": [{ "activity": string, "venue"?: string, "priceGBP"?: number }] }],
+  "days": [{ "day": string, "items": [{
+    "activity": string,
+    "venue"?: string,
+    "priceGBP"?: number,
+    "flight"?: { "airline": string, "priceGBP": number },
+    "hotel"?: { "name": string, "pricePerNightGBP"?: number }
+  }] }],
   "tradeoffs": string
 }\n` +
-          "CRITICAL RULE: the 'venue' and 'priceGBP' fields may ONLY contain " +
-          "specific names and numbers that were returned by your tools. If a " +
-          "tool did not return a venue or price, leave the field out and put a " +
-          "general suggestion in 'activity' instead (e.g. 'find a traditional " +
-          "pub in the centre'). Do not fill these fields from your own " +
-          "knowledge — they will be automatically checked against the tool data.",
+          "CRITICAL RULE: the 'venue', 'priceGBP', 'flight', and 'hotel' fields " +
+          "may ONLY contain specific names, numbers, flights, and hotels that " +
+          "were returned by your tools. If you recommend a flight, put its " +
+          "airline and price in the 'flight' field. If you recommend a hotel, " +
+          "put its name (and price if known) in the 'hotel' field — e.g. " +
+          "{ activity: 'Check in', hotel: { name: 'The Morgan Hotel', " +
+          "pricePerNightGBP: 190 } }. Do NOT describe flights, hotels, venues, " +
+          "or prices only in the 'activity' text to avoid the structured fields; " +
+          "everything specific goes in its typed field and will be automatically " +
+          "checked against the tool data. If a tool did not return something, " +
+          "leave the field out and put a general suggestion in 'activity' " +
+          "instead (e.g. 'find a traditional pub in the centre').",
       },
     ],
     // This forces the API to return valid JSON. It does NOT force our shape or

@@ -15,54 +15,21 @@
  * any bug you hit is in the loop, not in someone's flaky API.
  */
 
+import { flightSchema, searchFlightsLive } from "./flights-live.js";
+import { hotelSchema, searchHotelsLive } from "./hotels-live.js";
+
 // ---------------------------------------------------------------------------
 // 1. SCHEMAS — what the model sees
 // ---------------------------------------------------------------------------
+//
+// search_flights and search_hotels are now REAL (SerpApi / Google Flights &
+// Google Hotels) — see flights-live.ts and hotels-live.ts. search_activities is
+// still fake. Nothing else in the system changed to swap a tool from fake to
+// real: that's the tool abstraction earning its keep.
 
 export const toolSchemas = [
-  {
-    type: "function" as const,
-    function: {
-      name: "search_flights",
-      description:
-        "Search for return flights between two cities on given dates. " +
-        "Returns a list of options with airline, price in GBP, and duration.",
-      parameters: {
-        type: "object",
-        properties: {
-          from: { type: "string", description: "Departure city, e.g. 'London'" },
-          to: { type: "string", description: "Arrival city, e.g. 'Tokyo'" },
-          departDate: { type: "string", description: "Departure date, YYYY-MM-DD" },
-          returnDate: { type: "string", description: "Return date, YYYY-MM-DD" },
-        },
-        required: ["from", "to", "departDate", "returnDate"],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "search_hotels",
-      description:
-        "Search for hotels in a city for a date range. Returns options with " +
-        "name, district, price per night in GBP, and a rating out of 10.",
-      parameters: {
-        type: "object",
-        properties: {
-          city: { type: "string", description: "City to search, e.g. 'Tokyo'" },
-          checkIn: { type: "string", description: "Check-in date, YYYY-MM-DD" },
-          checkOut: { type: "string", description: "Check-out date, YYYY-MM-DD" },
-          maxPricePerNight: {
-            type: "number",
-            description: "Optional cap on nightly price in GBP",
-          },
-        },
-        required: ["city", "checkIn", "checkOut"],
-        additionalProperties: false,
-      },
-    },
-  },
+  flightSchema,
+  hotelSchema,
   {
     type: "function" as const,
     function: {
@@ -92,46 +59,12 @@ export const toolSchemas = [
 // 2. HANDLERS — what we actually run
 // ---------------------------------------------------------------------------
 
-type Handler = (args: any) => unknown;
+// Handlers may be sync (fake tools) or async (real API calls). runTool awaits
+// either, so both kinds live behind the same interface.
+type Handler = (args: any) => unknown | Promise<unknown>;
 
-const searchFlights: Handler = ({ from, to, departDate, returnDate }) => ({
-  query: { from, to, departDate, returnDate },
-  results: [
-    { airline: "ANA", price: 812, durationHours: 14.5, stops: 0 },
-    { airline: "JAL", price: 780, durationHours: 14.75, stops: 0 },
-    { airline: "Finnair", price: 610, durationHours: 17.5, stops: 1 },
-    { airline: "Emirates", price: 545, durationHours: 22, stops: 1 },
-    { airline: "China Eastern", price: 430, durationHours: 26, stops: 2 },
-  ],
-});
-
-const searchHotels: Handler = ({ city, checkIn, checkOut, maxPricePerNight }) => {
-  const byCity: Record<string, any[]> = {
-    tokyo: [
-      { name: "Park Hotel Tokyo", district: "Shiodome", pricePerNight: 180, rating: 8.7 },
-      { name: "Hotel Gracery", district: "Shinjuku", pricePerNight: 130, rating: 8.2 },
-      { name: "Wired Hotel", district: "Asakusa", pricePerNight: 95, rating: 8.5 },
-      { name: "Nine Hours", district: "Shinjuku", pricePerNight: 45, rating: 7.9 },
-    ],
-    kyoto: [
-      { name: "Hotel Kanra", district: "Karasuma", pricePerNight: 210, rating: 9.1 },
-      { name: "Nine Hours Kyoto", district: "Teramachi", pricePerNight: 50, rating: 8.0 },
-      { name: "Piece Hostel Sanjo", district: "Sanjo", pricePerNight: 65, rating: 8.6 },
-    ],
-    osaka: [
-      { name: "Hotel Hanshin", district: "Umeda", pricePerNight: 110, rating: 8.3 },
-      { name: "The Blend Inn", district: "Fukushima", pricePerNight: 85, rating: 8.8 },
-    ],
-  };
-
-  const all = byCity[String(city).toLowerCase()] ?? [];
-  const results =
-    typeof maxPricePerNight === "number"
-      ? all.filter((h) => h.pricePerNight <= maxPricePerNight)
-      : all;
-
-  return { query: { city, checkIn, checkOut, maxPricePerNight }, results };
-};
+// Flights and hotels are now real (searchFlightsLive / searchHotelsLive).
+// Only activities remain fake below.
 
 const searchActivities: Handler = ({ city, category }) => {
   const data: Record<string, Record<string, any[]>> = {
@@ -184,9 +117,9 @@ const searchActivities: Handler = ({ city, category }) => {
 // ---------------------------------------------------------------------------
 
 export const toolHandlers: Record<string, Handler> = {
-  search_flights: searchFlights,
-  search_hotels: searchHotels,
-  search_activities: searchActivities,
+  search_flights: searchFlightsLive, // REAL — SerpApi / Google Flights
+  search_hotels: searchHotelsLive, // REAL — SerpApi / Google Hotels
+  search_activities: searchActivities, // fake
 };
 
 /**
@@ -198,14 +131,16 @@ export const toolHandlers: Record<string, Handler> = {
  * rather than crashing — the model reads it and corrects itself on the next turn.
  * Errors are just more context. This is a real pattern, not a nicety.
  */
-export function runTool(name: string, rawArgs: string): string {
+// Now async: real tools (search_flights) make network calls. We await the
+// handler whether it's sync or async — awaiting a non-promise is harmless.
+export async function runTool(name: string, rawArgs: string): Promise<string> {
   try {
     const handler = toolHandlers[name];
     if (!handler) {
       return JSON.stringify({ error: `No such tool: ${name}` });
     }
     const args = JSON.parse(rawArgs);
-    return JSON.stringify(handler(args));
+    return JSON.stringify(await handler(args));
   } catch (err) {
     return JSON.stringify({
       error: err instanceof Error ? err.message : String(err),

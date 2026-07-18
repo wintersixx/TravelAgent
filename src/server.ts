@@ -73,7 +73,7 @@ app.get("/api/plan", async (req, res) => {
   try {
     await runAgent({
       client,
-      model: "gpt-4.1",
+      model: "gpt-5.4-mini-2026-03-17",
       systemPrompt: buildSystemPrompt(),
       userPrompt: prompt,
       // Every event the loop emits gets pushed straight down the wire. The UI

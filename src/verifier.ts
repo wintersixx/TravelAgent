@@ -92,6 +92,27 @@ export interface ItineraryItem {
   venue?: string;
   /** A cost the model is claiming. THIS gets verified against tool numbers. */
   priceGBP?: number;
+  /**
+   * A flight the model is claiming for this item. Both fields get verified
+   * against the flight tool's results. This is what closes the "free-text hole":
+   * previously the model could write "British Airways flights" in the activity
+   * prose and dodge verification entirely. Now, if it names a flight, it must
+   * put it HERE, where the airline and price are checked against real SerpApi
+   * data.
+   */
+  flight?: {
+    airline: string;
+    priceGBP: number;
+  };
+  /**
+   * A hotel the model is recommending. Same idea as flight: the name is checked
+   * against the hotel tool's results, and the price (if given) against the
+   * returned prices. Keeps hotels out of unchecked free-text prose.
+   */
+  hotel?: {
+    name: string;
+    pricePerNightGBP?: number;
+  };
 }
 
 export interface ItineraryDay {
@@ -110,7 +131,7 @@ export interface StructuredItinerary {
 export interface Flag {
   day: string;
   activity: string;
-  kind: "unverified_venue" | "unverified_price";
+  kind: "unverified_venue" | "unverified_price" | "unverified_flight" | "unverified_hotel";
   detail: string;
 }
 
@@ -169,6 +190,56 @@ export function verify(itinerary: StructuredItinerary, ledger: Ledger): Verifica
           });
         }
       }
+
+      // Flights are one claim: the airline AND its price must both be real. We
+      // treat the pair as a single unit — an itinerary that names "British
+      // Airways" (real) at "£50" (invented) is still a fabricated flight.
+      if (item.flight) {
+        totalClaims++;
+        const airlineOk = venueIsKnown(item.flight.airline, knownStrings);
+        const priceOk = knownNumbers.has(item.flight.priceGBP);
+        if (airlineOk && priceOk) {
+          verifiedCount++;
+        } else {
+          const bad = [
+            !airlineOk ? `airline "${item.flight.airline}"` : null,
+            !priceOk ? `price £${item.flight.priceGBP}` : null,
+          ]
+            .filter(Boolean)
+            .join(" and ");
+          flags.push({
+            day: day.day,
+            activity: item.activity,
+            kind: "unverified_flight",
+            detail: `Flight ${bad} was not in the flight search results — treat as unconfirmed.`,
+          });
+        }
+      }
+
+      // Hotels: the name must be real. The price, if given, must be real too.
+      if (item.hotel) {
+        totalClaims++;
+        const nameOk = venueIsKnown(item.hotel.name, knownStrings);
+        const priceOk =
+          item.hotel.pricePerNightGBP === undefined ||
+          knownNumbers.has(item.hotel.pricePerNightGBP);
+        if (nameOk && priceOk) {
+          verifiedCount++;
+        } else {
+          const bad = [
+            !nameOk ? `hotel "${item.hotel.name}"` : null,
+            !priceOk ? `price £${item.hotel.pricePerNightGBP}` : null,
+          ]
+            .filter(Boolean)
+            .join(" and ");
+          flags.push({
+            day: day.day,
+            activity: item.activity,
+            kind: "unverified_hotel",
+            detail: `Hotel ${bad} was not in the hotel search results — treat as unconfirmed.`,
+          });
+        }
+      }
     }
   }
 
@@ -206,6 +277,11 @@ export function renderVerified(
       const isFlagged = flagged.has(day.day + "|" + item.activity);
       let line = `- ${item.activity}`;
       if (item.venue) line += ` — **${item.venue}**`;
+      if (item.flight) line += ` — ✈️ **${item.flight.airline}** (£${item.flight.priceGBP})`;
+      if (item.hotel) {
+        line += ` — 🏨 **${item.hotel.name}**`;
+        if (typeof item.hotel.pricePerNightGBP === "number") line += ` (£${item.hotel.pricePerNightGBP}/night)`;
+      }
       if (typeof item.priceGBP === "number") line += ` (£${item.priceGBP})`;
       if (isFlagged) line += `  ⚠️ *unverified — not from a tool, treat as a suggestion to check*`;
       md += line + "\n";
@@ -217,7 +293,7 @@ export function renderVerified(
 
   md += `---\n\n`;
   if (result.totalClaims === 0) {
-    md += `_No specific venues or prices were claimed._`;
+    md += `_No specific flights, venues, or prices were claimed._`;
   } else {
     md += `_Verification: ${result.verifiedCount}/${result.totalClaims} concrete claims matched real tool data.`;
     if (result.flags.length > 0) {
