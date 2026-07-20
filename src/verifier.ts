@@ -103,6 +103,11 @@ export interface ItineraryItem {
   flight?: {
     airline: string;
     priceGBP: number;
+    /** IATA codes of the specific airports, e.g. "STN" and "PMA". Shown in the
+     *  itinerary so the traveller knows WHICH London airport to book from — the
+     *  sub-agent picks one, and it was getting lost as a generic "London". */
+    departureAirport?: string;
+    arrivalAirport?: string;
   };
   /**
    * A hotel the model is recommending. Same idea as flight: the name is checked
@@ -256,6 +261,34 @@ function venueIsKnown(venue: string, known: Set<string>): boolean {
   return false;
 }
 
+// ── Booking / action links ──────────────────────────────────────────────────
+// The itinerary is more useful if the traveller can act on it. We build deep
+// links to the relevant search so they can jump straight to booking.
+//
+// A note on honesty: these are links to SEARCHES (Google Flights for the route,
+// a Google search for the hotel/venue), not affiliate or "confirmed price"
+// links. We're pointing the user at the right page to take the next step, not
+// claiming the exact fare is booked. That distinction matters — a fake "book at
+// this price" link would be the kind of thing we've been careful NOT to build.
+
+function flightLink(f: { departureAirport?: string; arrivalAirport?: string }): string {
+  // Google Flights accepts a plain text query in the URL. If we have the exact
+  // airports the route is precise; otherwise fall back to a generic search.
+  const q =
+    f.departureAirport && f.arrivalAirport
+      ? `flights from ${f.departureAirport} to ${f.arrivalAirport}`
+      : "flights";
+  return `[book ↗](https://www.google.com/travel/flights?q=${encodeURIComponent(q)})`;
+}
+
+function hotelLink(name: string): string {
+  return `[view ↗](https://www.google.com/search?q=${encodeURIComponent(name + " hotel booking")})`;
+}
+
+function venueLink(name: string): string {
+  return `[map ↗](https://www.google.com/maps/search/${encodeURIComponent(name)})`;
+}
+
 /**
  * Render the verified itinerary as Markdown for the UI, with unverified items
  * visibly marked rather than silently removed. Marking (not deleting) is a
@@ -276,11 +309,16 @@ export function renderVerified(
     for (const item of day.items) {
       const isFlagged = flagged.has(day.day + "|" + item.activity);
       let line = `- ${item.activity}`;
-      if (item.venue) line += ` — **${item.venue}**`;
-      if (item.flight) line += ` — ✈️ **${item.flight.airline}** (£${item.flight.priceGBP})`;
+      if (item.venue) line += ` — **${item.venue}** ${venueLink(item.venue)}`;
+      if (item.flight) {
+        const f = item.flight;
+        const route = f.departureAirport && f.arrivalAirport ? ` ${f.departureAirport}→${f.arrivalAirport}` : "";
+        line += ` — ✈️ **${f.airline}**${route} (£${f.priceGBP}) ${flightLink(f)}`;
+      }
       if (item.hotel) {
         line += ` — 🏨 **${item.hotel.name}**`;
         if (typeof item.hotel.pricePerNightGBP === "number") line += ` (£${item.hotel.pricePerNightGBP}/night)`;
+        line += ` ${hotelLink(item.hotel.name)}`;
       }
       if (typeof item.priceGBP === "number") line += ` (£${item.priceGBP})`;
       if (isFlagged) line += `  ⚠️ *unverified — not from a tool, treat as a suggestion to check*`;

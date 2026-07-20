@@ -21,6 +21,7 @@ import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
 import { runAgent, type AgentEvent } from "./agent.js";
+import { getOrCreateSession, turnCount } from "./session-store.js";
 import { buildSystemPrompt } from "./prompt.js";
 
 const apiKey = process.env.OPENAI_API_KEY;
@@ -50,6 +51,12 @@ app.get("/api/plan", async (req, res) => {
     return;
   }
 
+  // The session id ties this request to a conversation. The browser generates
+  // one per page load and sends it with every message. No id → we make one, so
+  // the endpoint still works for one-off (stateless) callers like curl.
+  const sessionId = String(req.query.session ?? "") || `anon-${Date.now()}`;
+  const { session, isNew } = getOrCreateSession(sessionId, buildSystemPrompt());
+
   // ── Open an SSE stream ──────────────────────────────────────────────────
   // These three headers turn a normal response into a stream the browser keeps
   // open. After this, every res.write() is a message the browser receives live.
@@ -70,11 +77,20 @@ app.get("/api/plan", async (req, res) => {
     clientGone = true;
   });
 
+  // Tell the browser whether it's continuing a conversation, so the UI can show
+  // "Follow-up (turn N)". turnCount is read AFTER runAgent appends this turn, so
+  // we compute the label from isNew here and the count is informational.
+  if (!clientGone) {
+    send({ type: "session_info", isNew, turn: turnCount(session) + 1 });
+  }
+
   try {
     await runAgent({
       client,
       model: "gpt-5.4-mini-2026-03-17",
-      systemPrompt: buildSystemPrompt(),
+      // The SAME session object is reused across requests — this is the memory.
+      // runAgent appends the new user message and continues the conversation.
+      session,
       userPrompt: prompt,
       // Every event the loop emits gets pushed straight down the wire. The UI
       // is quite literally a rendering of this stream.

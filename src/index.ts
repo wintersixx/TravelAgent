@@ -6,7 +6,7 @@
 
 import "dotenv/config";
 import OpenAI from "openai";
-import { runAgent, type AgentEvent } from "./agent.js";
+import { runAgent, newSession, type AgentEvent } from "./agent.js";
 import { buildSystemPrompt } from "./prompt.js";
 
 const apiKey = process.env.OPENAI_API_KEY;
@@ -91,7 +91,7 @@ console.log(userPrompt);
 await runAgent({
   client,
   model: "gpt-5.4-mini-2026-03-17",
-  systemPrompt: buildSystemPrompt(),
+  session: newSession(buildSystemPrompt()),
   userPrompt,
   emit: printEvent,
 });

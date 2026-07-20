@@ -45,6 +45,7 @@ const MAX_TURNS = 10;
  * agent's narration — the UI is built entirely out of this stream.
  */
 export type AgentEvent =
+  | { type: "session_info"; isNew: boolean; turn: number }
   | { type: "turn_start"; turn: number; conversationLength: number }
   | { type: "thinking"; text: string }
   | { type: "tool_call"; name: string; args: string }
@@ -60,10 +61,36 @@ export type AgentEvent =
 
 export type Emit = (event: AgentEvent) => void;
 
+/**
+ * A conversation's persistent state: the growing message array AND the ledger of
+ * ground truth. This is the WHOLE of an agent's memory — keep this alive between
+ * requests and the agent "remembers"; throw it away and it starts cold. Both
+ * grow together across turns (we chose to accumulate the ledger, not reset it,
+ * so facts found in an earlier turn stay verifiable in later ones).
+ */
+export interface Session {
+  messages: ChatCompletionMessageParam[];
+  ledger: Ledger;
+}
+
+/** Start a fresh conversation with just the system prompt. */
+export function newSession(systemPrompt: string): Session {
+  return {
+    messages: [{ role: "system", content: systemPrompt }],
+    ledger: new Ledger(),
+  };
+}
+
 export interface AgentOptions {
   client: OpenAI;
   model: string;
-  systemPrompt: string;
+  /**
+   * The conversation to continue. On the first message it holds just the system
+   * prompt; on follow-ups it holds the entire prior history. This is what makes
+   * memory work — we no longer build a fresh array each call.
+   */
+  session: Session;
+  /** The new user message for this turn. */
   userPrompt: string;
   /** Called for every step. Defaults to a no-op if you don't care. */
   emit?: Emit;
@@ -72,29 +99,20 @@ export interface AgentOptions {
 export async function runAgent({
   client,
   model,
-  systemPrompt,
+  session,
   userPrompt,
   emit = () => {},
 }: AgentOptions): Promise<string> {
   /**
    * THE CONVERSATION.
    *
-   * This array is the agent's entire mind. It has no other memory. Every turn we
-   * send the whole thing back to the model, because the model is stateless — it
-   * remembers nothing between calls. "Giving an agent memory" (Version 3 of the
-   * exercise) just means putting more stuff in this array.
-   *
-   * It only ever grows. Watch it fill up as the loop runs.
+   * This array is the agent's entire mind. It used to be born fresh inside this
+   * function; now it lives in the Session and PERSISTS across requests. That
+   * single change is "conversational memory" — everything else here is the same
+   * loop as before. We just append this turn's user message and keep going.
    */
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userPrompt },
-  ];
-
-  // The ledger of ground truth. Every real tool result gets recorded here as it
-  // happens, and the verifier checks the final itinerary against it. This is the
-  // set of facts the model is allowed to build the answer from.
-  const ledger = new Ledger();
+  const { messages, ledger } = session;
+  messages.push({ role: "user", content: userPrompt });
 
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
     emit({ type: "turn_start", turn, conversationLength: messages.length });
@@ -136,6 +154,14 @@ export async function runAgent({
       // Then we verify that structure against the ledger before anyone sees it.
       emit({ type: "verifying" });
       const finalText = await finaliseAndVerify(client, model, messages, ledger, emit);
+
+      // Record the final itinerary AS THE ASSISTANT'S TURN in the persistent
+      // history. Without this, a follow-up would see all the research and tool
+      // results but not the actual plan we showed the user — so it wouldn't know
+      // it had recommended San Sebastián, or which flight. Now "make it an
+      // evening flight" has the full context to work from.
+      messages.push({ role: "assistant", content: finalText });
+
       emit({ type: "final", text: finalText });
       return finalText;
     }
@@ -232,7 +258,7 @@ async function finaliseAndVerify(
     "activity": string,
     "venue"?: string,
     "priceGBP"?: number,
-    "flight"?: { "airline": string, "priceGBP": number },
+    "flight"?: { "airline": string, "priceGBP": number, "departureAirport"?: string, "arrivalAirport"?: string },
     "hotel"?: { "name": string, "pricePerNightGBP"?: number }
   }] }],
   "tradeoffs": string
@@ -240,7 +266,10 @@ async function finaliseAndVerify(
           "CRITICAL RULE: the 'venue', 'priceGBP', 'flight', and 'hotel' fields " +
           "may ONLY contain specific names, numbers, flights, and hotels that " +
           "were returned by your tools. If you recommend a flight, put its " +
-          "airline and price in the 'flight' field. If you recommend a hotel, " +
+          "airline and price in the 'flight' field, AND the specific airport IATA " +
+          "codes in 'departureAirport'/'arrivalAirport' (e.g. 'STN' and 'PMA') so " +
+          "the traveller knows exactly which airport to fly from — never just say " +
+          "'London'. If you recommend a hotel, " +
           "put its name (and price if known) in the 'hotel' field — e.g. " +
           "{ activity: 'Check in', hotel: { name: 'The Morgan Hotel', " +
           "pricePerNightGBP: 190 } }. Do NOT describe flights, hotels, venues, " +

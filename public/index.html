@@ -53,7 +53,10 @@
       }
       .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
 
-      /* The activity feed — the "it's searching sources" bit. */
+      /* The activity trace — a Gemini-style "Thoughts" bar. Collapsed by
+         default; click the header to expand. Everything (steps) lives strictly
+         inside .activity, so collapsing the container always hides all of it,
+         no matter how the run ends. */
       .activity {
         background: var(--panel);
         border: 1px solid var(--border);
@@ -61,26 +64,27 @@
         overflow: hidden;
         margin-bottom: 14px;
       }
-      /* Once the run is done, the activity trace is secondary — dim it so the
-         answer below is what the eye lands on. */
-      .activity.done { opacity: .72; }
-      .activity.done:hover { opacity: 1; }
       .activity-head {
-        padding: 12px 16px;
-        border-bottom: 1px solid var(--border);
+        padding: 11px 16px;
         display: flex;
         align-items: center;
         gap: 10px;
         font-size: 13px;
         color: var(--muted);
+        cursor: pointer;
+        user-select: none;
       }
-      /* Clickable only after it becomes a toggle (has .toggle). */
-      .activity-head.toggle { cursor: pointer; user-select: none; }
-      .activity-head.toggle:hover { color: var(--text); }
+      .activity-head:hover { color: var(--text); }
       .activity-head .chevron { margin-left: auto; transition: transform .18s ease; font-size: 11px; }
-      /* Collapsed: hide the steps and the head's bottom border. */
+      /* The steps region: a bordered area below the header, shown when open. */
+      .steps {
+        border-top: 1px solid var(--border);
+        padding: 6px 0;
+        max-height: 340px;
+        overflow-y: auto;
+      }
+      /* Collapsed (the default): hide the steps entirely. */
       .activity.collapsed .steps { display: none; }
-      .activity.collapsed .activity-head { border-bottom: none; }
       .activity.collapsed .chevron { transform: rotate(-90deg); }
       .spinner {
         width: 14px; height: 14px;
@@ -88,9 +92,9 @@
         border-top-color: var(--accent);
         border-radius: 50%;
         animation: spin .8s linear infinite;
+        flex: none;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
-      .steps { padding: 6px 0; }
       .step {
         padding: 7px 16px;
         display: flex;
@@ -112,6 +116,17 @@
         border-radius: 14px;
         padding: 4px 20px 16px;
       }
+      .answer a {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 12px;
+        white-space: nowrap;
+        border: 1px solid var(--accent-dim);
+        border-radius: 6px;
+        padding: 1px 6px;
+        margin-left: 2px;
+      }
+      .answer a:hover { background: var(--accent-dim); }
       .answer h1, .answer h2, .answer h3 { line-height: 1.3; }
       .answer h1 { font-size: 20px; } .answer h2 { font-size: 17px; } .answer h3 { font-size: 15px; }
       .answer code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
@@ -169,13 +184,19 @@
         <textarea id="input" rows="1" placeholder="Plan me a trip to…"></textarea>
         <button id="send">Plan</button>
       </div>
-      <div class="hint">The agent searches flights, hotels and activities, then writes an itinerary.</div>
+      <div class="hint">After the first plan, you can follow up — e.g. "make it an evening flight" — and it'll remember the trip.</div>
     </footer>
 
     <script>
       // Where the backend lives. Same origin here; in a split deploy you'd point
       // this at your Google Cloud URL, e.g. "https://trip-api.run.app".
       const API_BASE = "";
+
+      // One session id per page load. Sent with every request so the server ties
+      // all messages from this tab into ONE conversation — that's what lets a
+      // follow-up ("make it an evening flight") continue where we left off.
+      // Reload the page = new session = fresh conversation.
+      const SESSION_ID = "s-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 
       const feed = document.getElementById("feed");
       const input = document.getElementById("input");
@@ -217,32 +238,38 @@
         input.style.height = "auto";
         send.disabled = true;
 
-        // The activity card that fills up as events stream in. Once the answer
-        // arrives this collapses behind a toggle — the itinerary is the point,
-        // the trace is there if you want to inspect it.
+        // The activity trace, Gemini-style: a compact bar that's COLLAPSED from
+        // the start. The header shows live status and is always clickable to
+        // expand/collapse. Because it starts collapsed and the header is always
+        // a toggle, the trace stays tidy no matter how the run ends — we never
+        // depend on a "final" event firing to hide it.
         const card = el("div", "msg");
-        const activity = el("div", "activity");
+        const activity = el("div", "activity collapsed");
         const head = el("div", "activity-head");
+        const spinner = el("span", "spinner");
         const headLabel = el("span", null, "Researching your trip…");
-        head.append(el("span", "spinner"), headLabel);
+        head.append(spinner, headLabel, el("span", "chevron", "▼"));
         const steps = el("div", "steps");
         activity.append(head, steps);
         card.append(activity);
         feed.append(card);
+        // Click anywhere on the header toggles the trace open/closed.
+        head.addEventListener("click", () => activity.classList.toggle("collapsed"));
         scroll();
 
         let stepCount = 0;
-
-        // Toggle the trace open/closed. Wired up on the header once the run ends.
-        const toggle = () => activity.classList.toggle("collapsed");
+        let gotFinal = false;
 
         // ── The SSE connection ────────────────────────────────────────────
         // EventSource is the browser's built-in SSE client. Each `data:` line
         // the server wrote becomes an onmessage event here. This is the entire
         // client-side transport — no library.
-        const url = API_BASE + "/api/plan?prompt=" + encodeURIComponent(prompt);
+        const url = API_BASE + "/api/plan?session=" + encodeURIComponent(SESSION_ID) +
+          "&prompt=" + encodeURIComponent(prompt);
         const es = new EventSource(url);
 
+        // Adds a step INSIDE the collapsed trace, and updates the header's live
+        // status line so the user sees what's happening without expanding.
         const addStep = (icon, body, sub, cls = "") => {
           stepCount++;
           const s = el("div", "step " + cls);
@@ -252,12 +279,21 @@
           if (sub) b.append(el("div", "sub", esc(sub)));
           s.append(b);
           steps.append(s);
-          scroll();
+          // Live status in the header (truncated) — a peek without opening.
+          headLabel.textContent = body.length > 60 ? body.slice(0, 60) + "…" : body;
+          // Only auto-scroll the page if the trace is open; otherwise the
+          // collapsed bar stays put and the page doesn't jump around.
+          if (!activity.classList.contains("collapsed")) scroll();
         };
 
         es.onmessage = (e) => {
           const ev = JSON.parse(e.data);
           switch (ev.type) {
+            case "session_info":
+              // Reflect whether this is a fresh plan or a follow-up on the
+              // existing conversation.
+              if (!ev.isNew) headLabel.textContent = "Continuing our conversation…";
+              break;
             case "thinking":
               addStep("💭", ev.text, null, "thinking");
               break;
@@ -288,18 +324,9 @@
               break;
             }
             case "final": {
-              // Turn the header into a collapse toggle summarising the run,
-              // then hide the trace. The itinerary becomes the main thing.
-              head.innerHTML = "";
-              const summary = el("span", null, `✓ Researched — ${stepCount} step${stepCount === 1 ? "" : "s"}`);
-              summary.style.color = "var(--good)";
-              head.append(summary, el("span", "chevron", "▼"));
-              head.classList.add("toggle");
-              head.addEventListener("click", toggle);
-              activity.classList.add("done", "collapsed");
-
-              // The answer lives in its own card below the (now collapsed) trace,
-              // so it reads as the response, not part of the log.
+              // The trace is already collapsed; just render the answer below it
+              // as its own card, so it reads as the response, not part of a log.
+              gotFinal = true;
               const ansCard = el("div", "msg");
               ansCard.append(el("div", "label", "Your trip"));
               ansCard.append(el("div", "answer", renderMarkdown(ev.text)));
@@ -309,7 +336,6 @@
             }
             case "error":
               addStep("❌", "Error: " + ev.message, null);
-              head.querySelector(".spinner")?.remove();
               break;
           }
         };
@@ -318,9 +344,15 @@
         es.addEventListener("done", () => { es.close(); finish(); });
         es.onerror = () => { es.close(); finish(); };
 
+        // Runs however the stream ends — clean finish, error, or dropped
+        // connection. This is where we settle the header into its final state,
+        // so the trace is always a tidy collapsed summary regardless.
         function finish() {
           send.disabled = false;
-          head.querySelector(".spinner")?.remove();
+          spinner.remove();
+          headLabel.textContent = gotFinal
+            ? `Researched in ${stepCount} step${stepCount === 1 ? "" : "s"} — tap to view`
+            : `Finished (${stepCount} step${stepCount === 1 ? "" : "s"}) — tap to view`;
         }
       }
 
@@ -334,6 +366,10 @@
         let html = "", inList = false;
         const inline = (t) =>
           esc(t)
+            // Links [text](url) → open in a new tab. Done before bold so link
+            // text can itself be bold. Only http(s) URLs are allowed through.
+            .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+              '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
             .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
             .replace(/`(.+?)`/g, "<code>$1</code>");
         for (let line of lines) {
